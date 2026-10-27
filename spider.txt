@@ -1,0 +1,101 @@
+import time
+import pandas as pd
+from playwright.sync_api import sync_playwright
+
+START_URL = "https://gaokao.chsi.com.cn/zyk/pub/myd/schAppraisalTop.action"
+OUTPUT = "院校满意度.xlsx"
+MAX_PAGES = 50
+
+def scrape():
+    data = []
+
+    with sync_playwright() as p:
+        print("[1/5] 用Chrome 启动...")
+
+        # 用系统安装的 Chrome
+        browser = p.chromium.launch(
+            headless=False,
+            channel="chrome",
+            args=[
+                "--disable-blink-features=AutomationControlled",
+            ]
+        )
+
+        context = browser.new_context(
+            viewport={"width": 1920, "height": 1080},
+            locale="zh-CN",
+            timezone_id="Asia/Shanghai",
+        )
+
+        page = context.new_page()
+
+        print("[2/5] 打开目标页面...")
+        page.goto(START_URL, wait_until="domcontentloaded", timeout=60000)
+        print("    已导航，等待 8 秒...")
+        time.sleep(8)
+
+        # 截图诊断
+        page.screenshot(path="debug.png")
+        print("[诊断] 已保存 debug.png")
+
+        page_text = page.inner_text("body")
+        print("[诊断] 页面前 500 字：")
+        print(page_text[:500])
+        print()
+
+        print("[3/5] 查找数据表格...")
+        try:
+            page.wait_for_selector("table.gk-table tbody tr", timeout=30000)
+        except Exception as e:
+            print("    等待表格失败：", e)
+            browser.close()
+            return
+
+        print("    找到表格，开始爬取...")
+
+        current_page = 1
+        while True:
+            rows = page.locator("table.gk-table tbody tr").all()
+            print(f"第 {current_page} 页，读取到 {len(rows)} 行")
+
+            for row in rows:
+                try:
+                    name = row.locator("td:nth-child(1) a").text_content(timeout=5000).strip()
+                    location = row.locator("td:nth-child(2)").text_content(timeout=5000).strip()
+                    zonghe = row.locator("td:nth-child(3) span.avg-rank").text_content(timeout=5000).strip()
+                    huanjing = row.locator("td:nth-child(4) span.avg-rank").text_content(timeout=5000).strip()
+                    shenghuo = row.locator("td:nth-child(5) span.avg-rank").text_content(timeout=5000).strip()
+
+                    data.append([name, location, zonghe, huanjing, shenghuo])
+                    print(f"  {name} | {location} | 综合 {zonghe} | 环境 {huanjing} | 生活 {shenghuo}")
+                except Exception as e:
+                    print("  解析一行出错，跳过：", e)
+                    continue
+
+            if MAX_PAGES and current_page >= MAX_PAGES:
+                print("已达到设定的最大页数")
+                break
+
+            next_btn = page.locator('li[title="下一页"]:not(.ivu-page-disabled)')
+            if next_btn.count() == 0:
+                print("已到最后一页")
+                break
+
+            print("点击下一页...")
+            next_btn.first.click()
+            page.wait_for_selector("table.gk-table tbody tr", timeout=15000)
+            time.sleep(1.5)
+
+            current_page += 1
+
+        browser.close()
+
+    df = pd.DataFrame(
+        data,
+        columns=["院校名称", "院校所在地", "综合满意度", "环境满意度", "生活满意度"]
+    )
+    df.to_excel(OUTPUT, index=False, engine="openpyxl")
+    print(f"完成，共保存 {len(df)} 条数据到 {OUTPUT}")
+
+if __name__ == "__main__":
+    scrape()
